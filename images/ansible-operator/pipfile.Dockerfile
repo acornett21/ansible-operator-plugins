@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi8/ubi:8.9-1107 AS basebuilder
+FROM registry.access.redhat.com/ubi9/ubi:9.4-1214 AS basebuilder
 
 # Install Rust so that we can ensure backwards compatibility with installing/building the cryptography wheel across all platforms
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -17,9 +17,9 @@ ENV PIP_NO_CACHE_DIR=1 \
 # and remove those not needed at runtime.
 RUN set -e && yum clean all && rm -rf /var/cache/yum/* \
   && yum update -y \
-  && yum install -y libffi-devel openssl-devel python39-devel gcc python39-pip python39-setuptools \
-  && pip3 install --upgrade pip~=23.3.2 \
-  && pip3 install pipenv==2023.11.15 \
+  && yum install -y libffi-devel openssl-devel python3.12-devel gcc python3.12-pip python3.12-setuptools \
+  && pip3.12 install --upgrade pip~=23.3.2 \
+  && pip3.12 install pipenv==2023.11.15 \
   && pipenv lock \
   # NOTE: This ignored vulnerability (70612) was detected in jinja2, \
   # but the vulnerability is disputed and may never be fixed. See: \
@@ -30,7 +30,7 @@ RUN set -e && yum clean all && rm -rf /var/cache/yum/* \
   # but the upgraded version doesn't support the use case (protocol we are using).\
   # Ref: https://github.com/operator-framework/ansible-operator-plugins/pull/67#issuecomment-2189164688
   && pipenv check --ignore 70612 --ignore 71064 \
-  && yum remove -y gcc libffi-devel openssl-devel python39-devel \
+  && yum remove -y gcc libffi-devel openssl-devel python3.12-devel \
   && yum clean all \
   && rm -rf /var/cache/yum
 
