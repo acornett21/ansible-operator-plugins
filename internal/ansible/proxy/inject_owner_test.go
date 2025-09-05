@@ -28,6 +28,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 
 	"github.com/operator-framework/ansible-operator-plugins/internal/ansible/proxy/kubeconfig"
 )
@@ -113,6 +116,113 @@ var _ = Describe("injectOwnerReferenceHandler", func() {
 			ownerRefs := modifiedCM.ObjectMeta.OwnerReferences
 
 			Expect(ownerRefs).To(HaveLen(1))
+
+			ownerRef := ownerRefs[0]
+
+			Expect(ownerRef.APIVersion).To(Equal("v1"))
+			Expect(ownerRef.Kind).To(Equal("Pod"))
+			Expect(ownerRef.Name).To(Equal(po.GetName()))
+			Expect(ownerRef.UID).To(Equal(po.GetUID()))
+		})
+
+		It("Should inject ownerReferences with protobuf Content-Type", func() {
+			if testing.Short() {
+				Skip("skipping ansible owner reference injection testing in short mode")
+			}
+			cm := corev1.ConfigMap{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: "v1",
+					Kind:       "ConfigMap",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-protobuf-owner-ref-injection",
+				},
+				Data: map[string]string{
+					"hello": "protobuf-world",
+				},
+			}
+
+			// Convert to unstructured first
+			unstructuredCM := &unstructured.Unstructured{}
+			cmData, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&cm)
+			if err != nil {
+				Fail("Failed to convert to unstructured")
+			}
+			unstructuredCM.Object = cmData
+
+			// Encode as protobuf
+			scheme := runtime.NewScheme()
+			corev1.AddToScheme(scheme)
+			codecs := serializer.NewCodecFactory(scheme)
+			encoder := codecs.LegacyCodec(corev1.SchemeGroupVersion)
+
+			body, err := runtime.Encode(encoder, unstructuredCM)
+			if err != nil {
+				Fail("Failed to encode as protobuf")
+			}
+
+			po, err := createTestPod("test-protobuf-injection", "default", testClient)
+			if err != nil {
+				Fail(fmt.Sprintf("Failed to create pod: %v", err))
+			}
+			defer func() {
+				if err := testClient.Delete(context.Background(), po); err != nil {
+					Fail(fmt.Sprintf("Failed to delete the pod: %v", err))
+				}
+			}()
+
+			req, err := http.NewRequest("POST", "http://localhost:8888/api/v1/namespaces/default/configmaps", bytes.NewReader(body))
+			if err != nil {
+				Fail(fmt.Sprintf("Failed to create http request: %v", err))
+			}
+
+			// Set protobuf content type
+			req.Header.Set("Content-Type", "application/vnd.kubernetes.protobuf")
+
+			username, err := kubeconfig.EncodeOwnerRef(
+				metav1.OwnerReference{
+					APIVersion: "v1",
+					Kind:       "Pod",
+					Name:       po.GetName(),
+					UID:        po.GetUID(),
+				}, "default")
+			if err != nil {
+				Fail("Failed to encode owner reference")
+			}
+			req.SetBasicAuth(username, "unused")
+
+			httpClient := http.Client{}
+
+			defer func() {
+				cleanupReq, err := http.NewRequest("DELETE", "http://localhost:8888/api/v1/namespaces/default/configmaps/test-protobuf-owner-ref-injection", bytes.NewReader([]byte{}))
+				if err != nil {
+					Fail(fmt.Sprintf("Failed to delete configmap: %v", err))
+				}
+				_, err = httpClient.Do(cleanupReq)
+				if err != nil {
+					Fail(fmt.Sprintf("Failed to delete configmap: %v", err))
+				}
+			}()
+
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				Fail(fmt.Sprintf("Failed to create configmap: %v", err))
+			}
+			respBody, err := io.ReadAll(resp.Body)
+			if err != nil {
+				Fail(fmt.Sprintf("Failed to read response body: %v", err))
+			}
+
+			// Response should be JSON regardless of request content type
+			var modifiedCM corev1.ConfigMap
+			err = json.Unmarshal(respBody, &modifiedCM)
+			if err != nil {
+				Fail(fmt.Sprintf("Failed to unmarshal configmap: %v", err))
+			}
+			ownerRefs := modifiedCM.ObjectMeta.OwnerReferences
+
+			Expect(ownerRefs).To(HaveLen(1))
+			Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 
 			ownerRef := ownerRefs[0]
 

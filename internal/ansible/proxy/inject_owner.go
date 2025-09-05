@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httputil"
+	"strings"
 
 	"github.com/operator-framework/operator-lib/handler"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -28,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/utils/set"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 
@@ -116,13 +118,43 @@ func (i *injectOwnerReferenceHandler) ServeHTTP(w http.ResponseWriter, req *http
 				http.Error(w, m, http.StatusInternalServerError)
 				return
 			}
+
 			data := &unstructured.Unstructured{}
-			err = json.Unmarshal(body, data)
-			if err != nil {
-				m := "Could not deserialize request body"
-				log.Error(err, m)
-				http.Error(w, m, http.StatusBadRequest)
-				return
+			contentType := req.Header.Get("Content-Type")
+			isProtobuf := strings.Contains(contentType, "application/vnd.kubernetes.protobuf")
+
+			if isProtobuf {
+				// Handle protobuf content
+				scheme := runtime.NewScheme()
+				codecs := serializer.NewCodecFactory(scheme)
+				decoder := codecs.UniversalDeserializer()
+
+				obj, _, err := decoder.Decode(body, nil, nil)
+				if err != nil {
+					m := "Could not deserialize protobuf request body"
+					log.Error(err, m)
+					http.Error(w, m, http.StatusBadRequest)
+					return
+				}
+
+				// Convert to unstructured
+				unstructuredObj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+				if err != nil {
+					m := "Could not convert to unstructured"
+					log.Error(err, m)
+					http.Error(w, m, http.StatusInternalServerError)
+					return
+				}
+				data.Object = unstructuredObj
+			} else {
+				// Handle JSON content (default)
+				err = json.Unmarshal(body, data)
+				if err != nil {
+					m := "Could not deserialize JSON request body"
+					log.Error(err, m)
+					http.Error(w, m, http.StatusBadRequest)
+					return
+				}
 			}
 			ownerGV, err := schema.ParseGroupVersion(owner.APIVersion)
 			if err != nil {
@@ -158,14 +190,33 @@ func (i *injectOwnerReferenceHandler) ServeHTTP(w http.ResponseWriter, req *http
 					return
 				}
 			}
-			newBody, err := json.Marshal(data.Object)
-			if err != nil {
-				m := "Could not serialize body"
-				log.Error(err, m)
-				http.Error(w, m, http.StatusInternalServerError)
-				return
+			var newBody []byte
+			if isProtobuf {
+				// Serialize back to protobuf to maintain content type consistency
+				scheme := runtime.NewScheme()
+				codecs := serializer.NewCodecFactory(scheme)
+				encoder := codecs.LegacyCodec(schema.GroupVersion{})
+
+				// Convert unstructured back to runtime.Object
+				obj := &unstructured.Unstructured{Object: data.Object}
+				newBody, err = runtime.Encode(encoder, obj)
+				if err != nil {
+					m := "Could not serialize protobuf body"
+					log.Error(err, m)
+					http.Error(w, m, http.StatusInternalServerError)
+					return
+				}
+			} else {
+				// Serialize to JSON (default)
+				newBody, err = json.Marshal(data.Object)
+				if err != nil {
+					m := "Could not serialize JSON body"
+					log.Error(err, m)
+					http.Error(w, m, http.StatusInternalServerError)
+					return
+				}
+				log.V(2).Info("Serialized body", "Body", string(newBody))
 			}
-			log.V(2).Info("Serialized body", "Body", string(newBody))
 			req.Body = io.NopCloser(bytes.NewBuffer(newBody))
 			req.ContentLength = int64(len(newBody))
 
