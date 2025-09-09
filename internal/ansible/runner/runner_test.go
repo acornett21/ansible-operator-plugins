@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -368,5 +369,88 @@ func TestMakeParameters(t *testing.T) {
 				t.Errorf("Error occurred, parameters %v are not marked unsafe", val)
 			}
 		}
+	}
+}
+
+func TestCollectAnsibleEnvVars(t *testing.T) {
+	// Save original environment
+	originalEnv := os.Environ()
+	defer func() {
+		// Restore original environment
+		os.Clearenv()
+		for _, env := range originalEnv {
+			parts := strings.SplitN(env, "=", 2)
+			if len(parts) == 2 {
+				os.Setenv(parts[0], parts[1])
+			}
+		}
+	}()
+
+	testCases := []struct {
+		name            string
+		envVars         map[string]string
+		expectedAnsible map[string]string
+	}{
+		{
+			name: "collect ANSIBLE_STDOUT_CALLBACK",
+			envVars: map[string]string{
+				"ANSIBLE_STDOUT_CALLBACK":       "json",
+				"ANSIBLE_LOAD_CALLBACK_PLUGINS": "1",
+				"REGULAR_VAR":                   "should_not_be_included",
+				"KUBECONFIG":                    "/tmp/kubeconfig",
+			},
+			expectedAnsible: map[string]string{
+				"ANSIBLE_STDOUT_CALLBACK":       "json",
+				"ANSIBLE_LOAD_CALLBACK_PLUGINS": "1",
+			},
+		},
+		{
+			name: "collect multiple ANSIBLE_ vars",
+			envVars: map[string]string{
+				"ANSIBLE_VERBOSITY":         "3",
+				"ANSIBLE_GATHERING":         "explicit",
+				"ANSIBLE_HOST_KEY_CHECKING": "false",
+				"NOT_ANSIBLE_VAR":           "excluded",
+			},
+			expectedAnsible: map[string]string{
+				"ANSIBLE_VERBOSITY":         "3",
+				"ANSIBLE_GATHERING":         "explicit",
+				"ANSIBLE_HOST_KEY_CHECKING": "false",
+			},
+		},
+		{
+			name:            "no ANSIBLE_ vars",
+			envVars:         map[string]string{"KUBECONFIG": "/tmp/kubeconfig"},
+			expectedAnsible: map[string]string{},
+		},
+		{
+			name: "empty ANSIBLE_ var value",
+			envVars: map[string]string{
+				"ANSIBLE_EMPTY_VAR": "",
+			},
+			expectedAnsible: map[string]string{
+				"ANSIBLE_EMPTY_VAR": "",
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Clear environment
+			os.Clearenv()
+
+			// Set test environment variables
+			for key, value := range tc.envVars {
+				os.Setenv(key, value)
+			}
+
+			// Test the function
+			result := collectAnsibleEnvVars()
+
+			// Verify results
+			if !reflect.DeepEqual(result, tc.expectedAnsible) {
+				t.Errorf("collectAnsibleEnvVars() = %v, expected %v", result, tc.expectedAnsible)
+			}
+		})
 	}
 }

@@ -52,6 +52,32 @@ const (
 	ansibleRunnerBin = "ansible-runner"
 )
 
+// collectAnsibleEnvVars collects all ANSIBLE_* environment variables from the current environment
+// and returns them as a map. This allows users to configure Ansible behavior through environment
+// variables like ANSIBLE_STDOUT_CALLBACK, ANSIBLE_LOAD_CALLBACK_PLUGINS, etc.
+func collectAnsibleEnvVars() map[string]string {
+	envVars := make(map[string]string)
+
+	// Get all environment variables
+	for _, env := range os.Environ() {
+		// Split on first '=' to separate key and value
+		parts := strings.SplitN(env, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := parts[0]
+		value := parts[1]
+
+		// Only include ANSIBLE_* variables
+		if strings.HasPrefix(key, "ANSIBLE_") {
+			envVars[key] = value
+		}
+	}
+
+	return envVars
+}
+
 // Runner - a runnable that should take the parameters and name and namespace
 // and run the correct code.
 type Runner interface {
@@ -203,14 +229,22 @@ func (r *runner) Run(ident string, u *unstructured.Unstructured, kubeconfig stri
 	if err != nil {
 		return nil, err
 	}
+	// Collect base environment variables required for Kubernetes auth
+	envVars := map[string]string{
+		"K8S_AUTH_KUBECONFIG": kubeconfig,
+		"KUBECONFIG":          kubeconfig,
+	}
+
+	// Add all ANSIBLE_* environment variables from the current environment
+	for key, value := range collectAnsibleEnvVars() {
+		envVars[key] = value
+	}
+
 	inputDir := inputdir.InputDir{
 		Path: filepath.Join("/tmp/ansible-operator/runner/", r.GVK.Group, r.GVK.Version, r.GVK.Kind,
 			u.GetNamespace(), u.GetName()),
 		Parameters: r.makeParameters(u),
-		EnvVars: map[string]string{
-			"K8S_AUTH_KUBECONFIG": kubeconfig,
-			"KUBECONFIG":          kubeconfig,
-		},
+		EnvVars:    envVars,
 		Settings: map[string]string{
 			"runner_http_url":  receiver.SocketPath,
 			"runner_http_path": receiver.URLPath,
