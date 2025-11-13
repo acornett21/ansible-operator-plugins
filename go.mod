@@ -26,7 +26,7 @@ require (
 	k8s.io/kubectl v0.33.5
 	k8s.io/utils v0.0.0-20251002143259-bc988d571ff4
 	sigs.k8s.io/controller-runtime v0.21.0
-	sigs.k8s.io/kubebuilder/v4 v4.6.0
+	sigs.k8s.io/kubebuilder/v4 v4.9.0
 	sigs.k8s.io/yaml v1.6.0
 )
 
